@@ -1,0 +1,50 @@
+# /etc/systemd/system/mpd_framebuffer.service
+# Unit to run the MPD album art HTTP/Framebuffer service on tty1
+# Adjust ExecStart path to where the script is installed.
+#this is the current working version !
+
+[Unit]
+Description=MPD Album Art HTTP/FB Service (tty1)
+Wants=network-online.target
+After=network-online.target mpd.service getty@tty1.service
+
+[Service]
+Type=simple
+# Run as dedicated user
+User=mpdviewer
+Group=mpdviewer
+# Ensure access to framebuffer and console
+SupplementaryGroups=video tty
+# Home/working dir for config at /home/mpdviewer/.config/mpd_framebuffer_service/config.json
+WorkingDirectory=/home/mpdviewer
+Environment=PYTHONUNBUFFERED=1
+# Ensure PATH includes fbi location when running under systemd
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+
+# Bind a controlling TTY so fbi can render to VT1
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+# Note: Switching VTs (chvt) usually requires root; we rely on fbi -T 1 via display_cmd instead.
+
+# IMPORTANT: Set display_cmd in the service user's config to force VT1:
+#   ~/.config/mpd_framebuffer_service/config.json
+#   {
+#     "display_cmd": "fbi -T 1 {path}",
+#     ...
+#   }
+
+# Adjust path to where the script actually lives (we'll install to /opt)
+ExecStart=/usr/bin/python3 /opt/mpd_framebuffer_service_http.py
+
+Restart=always
+RestartSec=3
+
+# Journal logs; add '+console' if you want logs mirrored to tty1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
