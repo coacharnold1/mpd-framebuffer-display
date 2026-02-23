@@ -363,26 +363,34 @@ def display_image(path: str, cfg: dict) -> None:
 
     fbi = shutil.which("fbi")
     if fbi:
-        # Try the simplest invocation first, since that's known to work manually
+        # Kill any existing fbi processes first
+        subprocess.run(["pkill", "-f", "fbi"], check=False)
+        
+        # Try fbi with full options for proper framebuffer display
         try:
-            subprocess.run(["pkill", "-f", "fbi"], check=False)
-            subprocess.run([fbi, path], check=True)
+            subprocess.run([
+                fbi,
+                "-T", "1",           # Target TTY 1
+                "-d", "/dev/fb0",    # Framebuffer device
+                "-a",                # Autozoom to fill screen
+                "--noverbose",       # Hide filename/info text
+                path
+            ], check=True)
             return
         except Exception:
-            logging.exception("Plain 'fbi {path}' failed; trying with fb/tty options")
-            # Fallback: try specifying framebuffer and TTY explicitly
+            logging.exception("fbi with TTY/FB options failed; trying simple mode")
+            # Fallback: try without TTY specification
             try:
-                subprocess.run(["pkill", "-f", "fbi"], check=False)
                 subprocess.run([
                     fbi,
                     "-d", "/dev/fb0",
-                    "-noverbose",
                     "-a",
+                    "--noverbose",
                     path
                 ], check=True)
                 return
             except Exception as e:
-                logging.exception("fbi with fb options failed: %s", str(e))
+                logging.exception("fbi fallback failed: %s", str(e))
     else:
         logging.error("fbi not found - cannot display images")
 
