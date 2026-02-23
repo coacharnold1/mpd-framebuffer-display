@@ -104,6 +104,13 @@ check_dependencies() {
         esac
     fi
     
+    # Check for venv module (needed for virtual environments on Debian/Ubuntu)
+    if [[ "$pkg_manager" == "apt" ]]; then
+        if ! dpkg -l | grep -q python3-venv; then
+            missing_packages+=("python3-venv")
+        fi
+    fi
+    
     # Check for fbi (framebuffer image viewer)
     if ! command -v fbi &> /dev/null; then
         case "$pkg_manager" in
@@ -132,14 +139,22 @@ check_dependencies() {
 }
 
 install_python_deps() {
+    print_info "Creating Python virtual environment..."
+    
+    # Ensure installation directory exists
+    mkdir -p "$INSTALL_DIR"
+    
+    # Create venv in the installation directory
+    python3 -m venv "$INSTALL_DIR/venv"
+    
     print_info "Installing Python dependencies..."
     
     if [ -f "requirements.txt" ]; then
-        pip3 install -r requirements.txt
+        "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt
         print_info "Python dependencies installed"
     else
         print_warning "requirements.txt not found, installing manually..."
-        pip3 install python-mpd2 Pillow
+        "$INSTALL_DIR/venv/bin/pip" install python-mpd2 Pillow
     fi
 }
 
@@ -195,21 +210,22 @@ setup_service_config() {
     # Run setup as service user if config doesn't exist
     if [ ! -f "$config_dir/config.json" ]; then
         print_info "Running initial setup for $SERVICE_USER..."
-        sudo -u $SERVICE_USER python3 "$INSTALL_DIR/$SCRIPT_NAME" --setup
+        sudo -u $SERVICE_USER "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/$SCRIPT_NAME" --setup
     else
         print_info "Configuration already exists at $config_dir/config.json"
     fi
     
     # Ensure proper ownership
     chown -R $SERVICE_USER:$SERVICE_GROUP /home/$SERVICE_USER
+    chown -R $SERVICE_USER:$SERVICE_GROUP "$INSTALL_DIR/venv"
 }
 
 install_systemd_service() {
     print_info "Installing systemd service..."
     
     if [ -f "systemd/$SERVICE_NAME" ]; then
-        # Update the ExecStart path in the service file
-        sed "s|/opt/mpd_framebuffer_service_http.py|$INSTALL_DIR/$SCRIPT_NAME|g" \
+        # Update the ExecStart to use venv Python and correct script path
+        sed "s|ExecStart=.*|ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/$SCRIPT_NAME|g" \
             "systemd/$SERVICE_NAME" > "/etc/systemd/system/$SERVICE_NAME"
         
         # Reload systemd
@@ -247,9 +263,13 @@ show_info() {
     echo "  Restart: sudo systemctl restart $SERVICE_NAME"
     echo "  Logs:    sudo journalctl -u $SERVICE_NAME -f"
     echo ""
+    echo "Installation paths:"
+    echo "  Service:  $INSTALL_DIR/"
+    echo "  Venv:     $INSTALL_DIR/venv/"
+    echo ""
     echo "Configuration:"
-    echo "  Config:  /home/$SERVICE_USER/.config/mpd_framebuffer_service/config.json"
-    echo "  Logs:    /home/$SERVICE_USER/.cache/mpd_framebuffer_service/service.log"
+    echo "  Config:   /home/$SERVICE_USER/.config/mpd_framebuffer_service/config.json"
+    echo "  Logs:     /home/$SERVICE_USER/.cache/mpd_framebuffer_service/service.log"
     echo ""
     echo "HTTP endpoints (localhost only by default):"
     echo "  Current art: http://localhost:8080/current.jpg"
