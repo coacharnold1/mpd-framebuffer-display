@@ -224,6 +224,27 @@ setup_service_config() {
     chown -R $SERVICE_USER:$SERVICE_GROUP "$INSTALL_DIR/venv"
 }
 
+setup_sudoers() {
+    print_info "Setting up sudoers for framebuffer access..."
+    
+    if [ -f "sudoers.d/mpd_framebuffer" ]; then
+        # Install sudoers file with proper permissions
+        cp "sudoers.d/mpd_framebuffer" "/etc/sudoers.d/mpd_framebuffer"
+        chmod 0440 "/etc/sudoers.d/mpd_framebuffer"
+        
+        # Validate sudoers file
+        if visudo -c -f "/etc/sudoers.d/mpd_framebuffer" &>/dev/null; then
+            print_info "Sudoers file installed for passwordless fbi access"
+        else
+            print_error "Sudoers file validation failed, removing it"
+            rm "/etc/sudoers.d/mpd_framebuffer"
+            exit 1
+        fi
+    else
+        print_warning "sudoers.d/mpd_framebuffer not found, fbi may not work properly"
+    fi
+}
+
 install_systemd_service() {
     print_info "Installing systemd service..."
     
@@ -295,6 +316,7 @@ main() {
     create_service_user
     install_files
     setup_service_config
+    setup_sudoers
     install_systemd_service
     enable_service
     show_info

@@ -227,6 +227,71 @@ def try_resize_and_save(img_bytes: bytes, path: Path, size: tuple[int, int], met
             logging.exception("Failed to write image file")
 
 
+def create_metadata_only_image(canvas_size: tuple[int, int], metadata: dict) -> Image.Image:
+    """Create image with just metadata text, no album art"""
+    try:
+        canvas_width, canvas_height = canvas_size
+        
+        # Create dark canvas
+        canvas = Image.new('RGB', canvas_size, color='#1a1a1a')
+        
+        # Draw metadata text centered
+        draw = ImageDraw.Draw(canvas)
+        
+        # Try to load fonts
+        try:
+            font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
+            font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26)
+        except:
+            font_large = font_medium = font_small = ImageFont.load_default()
+        
+        # Starting position for text (centered with padding)
+        text_x = 60
+        text_y = 100
+        max_text_width = canvas_width - 120
+        
+        # Draw Artist
+        artist = metadata.get('artist', 'Unknown Artist')
+        if artist:
+            draw.text((text_x, text_y), f"Artist:", font=font_small, fill='#888888')
+            text_y += 40
+            artist_lines = wrap_text(artist, draw, font_large, max_text_width)
+            for line in artist_lines:
+                draw.text((text_x, text_y), line, font=font_large, fill='#ffffff')
+                text_y += 52
+        
+        text_y += 20
+        
+        # Draw Album
+        album = metadata.get('album', '')
+        if album:
+            draw.text((text_x, text_y), f"Album:", font=font_small, fill='#888888')
+            text_y += 40
+            album_lines = wrap_text(album, draw, font_medium, max_text_width)
+            for line in album_lines:
+                draw.text((text_x, text_y), line, font=font_medium, fill='#cccccc')
+                text_y += 42
+        
+        text_y += 20
+        
+        # Draw Title
+        title = metadata.get('title', '')
+        if title:
+            draw.text((text_x, text_y), f"Track:", font=font_small, fill='#888888')
+            text_y += 40
+            title_lines = wrap_text(title, draw, font_medium, max_text_width)
+            for line in title_lines:
+                draw.text((text_x, text_y), line, font=font_medium, fill='#cccccc')
+                text_y += 42
+        
+        return canvas
+    except Exception:
+        logging.exception("Failed to create metadata-only image")
+        # Return blank canvas on error
+        return Image.new('RGB', canvas_size, color='#1a1a1a')
+
+
 def create_composite_with_metadata(art_img: Image.Image, canvas_size: tuple[int, int], metadata: dict) -> Image.Image:
     """Create composite image with album art on right and metadata text on left"""
     try:
@@ -346,10 +411,53 @@ def fetch_and_save(client: MPDClient, cfg: dict, outdir: Path) -> None:
         if not uri:
             logging.info("No file URI in currentsong")
             return
-        resp = client.albumart(uri)
-        data = normalize_albumart_response(resp)
+        
+        target = outdir / cfg["current_filename"]
+        size = tuple(cfg.get("resize", [800, 480]))
+        metadata = {
+            'artist': song.get('artist', ''),
+            'album': song.get('album', ''),
+            'title': song.get('title', '')
+        }
+        
+        # Try embedded album art first
+        data = None
+        try:
+            resp = client.albumart(uri)
+            data = normalize_albumart_response(resp)
+            if data:
+                logging.info("Found embedded album art")
+        except (MPDError, CommandError) as e:
+            logging.info("No embedded album art: %s", e)
+        
+        # If no embedded art, try external cover files (cover.jpg, folder.jpg, etc.)
         if not data:
-            logging.info("No albumart bytes extracted")
+            try:
+                resp = client.readpicture(uri)
+                data = normalize_albumart_response(resp)
+                if data:
+                    logging.info("Found external cover art (cover.jpg/folder.jpg)")
+            except (MPDError, CommandError) as e:
+                logging.info("No external cover art: %s", e)
+        
+        if not data:
+            logging.info("No album art found (embedded or external), creating metadata-only display")
+            
+            # No album art - create metadata-only display
+            if Image and ImageDraw and ImageFont:
+                try:
+                    logging.info("Creating metadata-only display for %s - %s", 
+                                metadata.get('artist', ''), metadata.get('title', ''))
+                    im = create_metadata_only_image(size, metadata)
+                    im.save(str(target), "JPEG", quality=95)
+                    with _STATE_LOCK:
+                        _STATE["last_fetch"] = time.time()
+                        _STATE["last_error"] = "metadata only"
+                    return
+                except Exception as ex:
+                    logging.exception("Failed to create metadata-only image: %s", ex)
+            
+            # Fallback to default image
             if cfg.get("default_image"):
                 try:
                     dst = outdir / cfg["current_filename"]
@@ -366,13 +474,19 @@ def fetch_and_save(client: MPDClient, cfg: dict, outdir: Path) -> None:
             with _STATE_LOCK:
                 _STATE["last_error"] = "no album art"
             return
-        target = outdir / cfg["current_filename"]
-        size = tuple(cfg.get("resize", [800, 480]))
-        metadata = {
-            'artist': song.get('artist', ''),
-            'album': song.get('album', ''),
-            'title': song.get('title', '')
-        }
+        
+        # Save raw album art for future reuse
+        last_art_raw = outdir / "last_albumart_raw.jpg"
+        if Image:
+            try:
+                from io import BytesIO
+                im = Image.open(BytesIO(data))
+                im = im.convert("RGB")
+                im.save(str(last_art_raw), "JPEG", quality=95)
+                logging.info("Saved raw album art for reuse")
+            except Exception as ex:
+                logging.warning("Failed to save raw album art: %s", ex)
+        
         try_resize_and_save(data, target, size, metadata)
         with _STATE_LOCK:
             _STATE["last_fetch"] = time.time()
@@ -380,6 +494,38 @@ def fetch_and_save(client: MPDClient, cfg: dict, outdir: Path) -> None:
         logging.info("Saved current art to %s", target)
     except (MPDError, CommandError) as e:
         logging.exception("MPD error fetching albumart: %s", e)
+        # Even if albumart fetch failed, create metadata-only display
+        song = {}
+        try:
+            song = client.currentsong() or {}
+        except:
+            pass
+        if song:
+            with _STATE_LOCK:
+                _STATE["artist"] = song.get("artist", "")
+                _STATE["album"] = song.get("album", "")
+                _STATE["title"] = song.get("title", "")
+            metadata = {
+                'artist': song.get('artist', ''),
+                'album': song.get('album', ''),
+                'title': song.get('title', '')
+            }
+            target = outdir / cfg["current_filename"]
+            size = tuple(cfg.get("resize", [800, 480]))
+            
+            # Create metadata-only display
+            if Image and ImageDraw and ImageFont:
+                try:
+                    logging.info("Creating metadata-only display after albumart error for %s - %s", 
+                                metadata.get('artist', ''), metadata.get('title', ''))
+                    im = create_metadata_only_image(size, metadata)
+                    im.save(str(target), "JPEG", quality=95)
+                    with _STATE_LOCK:
+                        _STATE["last_fetch"] = time.time()
+                        _STATE["last_error"] = "metadata only after error"
+                    return
+                except Exception as ex2:
+                    logging.exception("Failed to create metadata-only image after error: %s", ex2)
         with _STATE_LOCK:
             _STATE["last_error"] = str(e)
     except Exception:
@@ -483,23 +629,33 @@ def display_image(path: str, cfg: dict) -> None:
     fbi = shutil.which("fbi")
     logging.info("fbi path: %s", fbi)
     if fbi:
-        # Kill any existing fbi processes first
+        # Kill any existing fbi processes first - use SIGKILL to ensure they die
         logging.info("Killing existing fbi processes")
-        subprocess.run(["pkill", "-f", "fbi"], check=False)
+        subprocess.run(["sudo", "pkill", "-9", "fbi"], check=False)
+        time.sleep(0.2)  # Brief pause to let process die
         
         # Try fbi with full options for proper framebuffer display
+        # Use sudo to run fbi as root (needs TTY access)
         try:
             fbi_cmd = [
+                "sudo",
                 fbi,
                 "-T", "1",           # Target TTY 1
                 "-d", "/dev/fb0",    # Framebuffer device
                 "-a",                # Autozoom to fill screen
                 "--noverbose",       # Hide filename/info text
+                "-t", "1",           # Timeout 1 second
                 path
             ]
             logging.info("Running fbi command: %s", " ".join(fbi_cmd))
-            subprocess.run(fbi_cmd, check=True)
-            logging.info("FBI command completed successfully")
+            # Use Popen and completely detach - image stays on framebuffer after fbi exits
+            subprocess.Popen(fbi_cmd, 
+                           stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           start_new_session=True)
+            logging.info("FBI command started (detached)")
+            time.sleep(1.5)  # Give fbi time to display before continuing
             return
         except Exception:
             logging.exception("fbi with TTY/FB options failed; trying simple mode")

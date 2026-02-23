@@ -1,0 +1,2 @@
+# Allow mpdviewer user to run fbi and pkill without password for framebuffer display
+mpdviewer ALL=(ALL) NOPASSWD: /usr/bin/fbi, /usr/bin/pkill
