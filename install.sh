@@ -203,9 +203,14 @@ install_files() {
 setup_service_config() {
     print_info "Setting up service configuration..."
     
-    # Create config directory for service user
+    # Create config and cache directories for service user
     local config_dir="/home/$SERVICE_USER/.config/mpd_framebuffer_service"
+    local cache_dir="/home/$SERVICE_USER/.cache/mpd_framebuffer_service"
     mkdir -p "$config_dir"
+    mkdir -p "$cache_dir"
+    
+    # Set ownership BEFORE running setup
+    chown -R $SERVICE_USER:$SERVICE_GROUP /home/$SERVICE_USER
     
     # Run setup as service user if config doesn't exist
     if [ ! -f "$config_dir/config.json" ]; then
@@ -215,8 +220,7 @@ setup_service_config() {
         print_info "Configuration already exists at $config_dir/config.json"
     fi
     
-    # Ensure proper ownership
-    chown -R $SERVICE_USER:$SERVICE_GROUP /home/$SERVICE_USER
+    # Ensure proper ownership of venv
     chown -R $SERVICE_USER:$SERVICE_GROUP "$INSTALL_DIR/venv"
 }
 
