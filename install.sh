@@ -38,35 +38,97 @@ check_root() {
     fi
 }
 
+detect_package_manager() {
+    if command -v pacman &> /dev/null; then
+        echo "pacman"
+    elif command -v apt &> /dev/null; then
+        echo "apt"
+    elif command -v dnf &> /dev/null; then
+        echo "dnf"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
+    else
+        echo "unknown"
+    fi
+}
+
+install_system_packages() {
+    local pkg_manager=$1
+    shift
+    local packages=("$@")
+    
+    print_info "Installing system packages: ${packages[*]}"
+    
+    case "$pkg_manager" in
+        pacman)
+            pacman -S --noconfirm "${packages[@]}"
+            ;;
+        apt)
+            apt update
+            apt install -y "${packages[@]}"
+            ;;
+        dnf)
+            dnf install -y "${packages[@]}"
+            ;;
+        yum)
+            yum install -y "${packages[@]}"
+            ;;
+        *)
+            print_error "Unknown package manager. Please install manually: ${packages[*]}"
+            return 1
+            ;;
+    esac
+}
+
 check_dependencies() {
     print_info "Checking system dependencies..."
     
-    local missing_deps=()
+    local pkg_manager=$(detect_package_manager)
+    local missing_packages=()
     
     # Check for Python 3
     if ! command -v python3 &> /dev/null; then
-        missing_deps+=("python3")
+        case "$pkg_manager" in
+            pacman) missing_packages+=("python") ;;
+            apt) missing_packages+=("python3") ;;
+            dnf|yum) missing_packages+=("python3") ;;
+        esac
     fi
     
     # Check for pip
     if ! command -v pip3 &> /dev/null; then
-        missing_deps+=("python3-pip")
+        case "$pkg_manager" in
+            pacman) missing_packages+=("python-pip") ;;
+            apt) missing_packages+=("python3-pip") ;;
+            dnf|yum) missing_packages+=("python3-pip") ;;
+        esac
     fi
     
     # Check for fbi (framebuffer image viewer)
     if ! command -v fbi &> /dev/null; then
-        print_warning "fbi not found. Install with: sudo pacman -S fbida (Arch) or sudo apt install fbi (Debian/Ubuntu)"
-        missing_deps+=("fbi/fbida")
+        case "$pkg_manager" in
+            pacman) missing_packages+=("fbida") ;;
+            apt) missing_packages+=("fbi") ;;
+            dnf|yum) missing_packages+=("fbi") ;;
+        esac
     fi
     
-    if [ ${#missing_deps[@]} -ne 0 ]; then
-        print_error "Missing dependencies: ${missing_deps[*]}"
-        print_info "On Arch: sudo pacman -S python python-pip fbida"
-        print_info "On Debian/Ubuntu: sudo apt install python3 python3-pip fbi"
-        exit 1
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        print_warning "Missing dependencies detected: ${missing_packages[*]}"
+        print_info "Attempting to install automatically..."
+        
+        if install_system_packages "$pkg_manager" "${missing_packages[@]}"; then
+            print_info "Dependencies installed successfully"
+        else
+            print_error "Failed to install dependencies automatically"
+            print_info "On Arch: sudo pacman -S python python-pip fbida"
+            print_info "On Debian/Ubuntu: sudo apt install python3 python3-pip fbi"
+            print_info "On Fedora: sudo dnf install python3 python3-pip fbi"
+            exit 1
+        fi
+    else
+        print_info "All system dependencies found"
     fi
-    
-    print_info "All system dependencies found"
 }
 
 install_python_deps() {
