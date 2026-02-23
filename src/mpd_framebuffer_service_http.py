@@ -261,7 +261,7 @@ def create_composite_with_metadata(art_img: Image.Image, canvas_size: tuple[int,
         
         # Starting position for text (left side with padding)
         text_x = 40
-        text_y = 80
+        text_y = 20  # Moved up further (was 40, originally 80)
         max_text_width = art_x - 80  # Leave space before art
         
         # Draw Artist
@@ -275,7 +275,7 @@ def create_composite_with_metadata(art_img: Image.Image, canvas_size: tuple[int,
                 draw.text((text_x, text_y), line, font=font_large, fill='#ffffff')
                 text_y += 45
         
-        text_y += 20  # Space between sections
+        text_y += 10  # Reduced spacing more (was 15)
         
         # Draw Album
         album = metadata.get('album', '')
@@ -287,7 +287,7 @@ def create_composite_with_metadata(art_img: Image.Image, canvas_size: tuple[int,
                 draw.text((text_x, text_y), line, font=font_medium, fill='#cccccc')
                 text_y += 38
         
-        text_y += 20
+        text_y += 10  # Reduced spacing more (was 15)
         
         # Draw Title
         title = metadata.get('title', '')
@@ -469,6 +469,7 @@ class MiniHTTPServer(ThreadingHTTPServer):
 
 
 def display_image(path: str, cfg: dict) -> None:
+    logging.info("display_image called with path: %s", path)
     cmd_override = cfg.get("display_cmd", "").strip()
     if cmd_override:
         cmd = cmd_override.format(path=path)
@@ -480,20 +481,25 @@ def display_image(path: str, cfg: dict) -> None:
 
     # Use fbi to display the image (which now has metadata overlay from Python)
     fbi = shutil.which("fbi")
+    logging.info("fbi path: %s", fbi)
     if fbi:
         # Kill any existing fbi processes first
+        logging.info("Killing existing fbi processes")
         subprocess.run(["pkill", "-f", "fbi"], check=False)
         
         # Try fbi with full options for proper framebuffer display
         try:
-            subprocess.run([
+            fbi_cmd = [
                 fbi,
                 "-T", "1",           # Target TTY 1
                 "-d", "/dev/fb0",    # Framebuffer device
                 "-a",                # Autozoom to fill screen
                 "--noverbose",       # Hide filename/info text
                 path
-            ], check=True)
+            ]
+            logging.info("Running fbi command: %s", " ".join(fbi_cmd))
+            subprocess.run(fbi_cmd, check=True)
+            logging.info("FBI command completed successfully")
             return
         except Exception:
             logging.exception("fbi with TTY/FB options failed; trying simple mode")
