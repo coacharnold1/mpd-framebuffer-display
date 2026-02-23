@@ -54,9 +54,11 @@ except Exception:
     CommandError = Exception  # type: ignore
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
 except Exception:
     Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
 
 APP_NAME = "mpd_framebuffer_service"
 DEFAULT_CONFIG = {
@@ -200,7 +202,7 @@ def normalize_albumart_response(resp: Any) -> Optional[bytes]:
     return None
 
 
-def try_resize_and_save(img_bytes: bytes, path: Path, size: tuple[int, int]) -> None:
+def try_resize_and_save(img_bytes: bytes, path: Path, size: tuple[int, int], metadata: dict = None) -> None:
     if Image is None:
         path.write_bytes(img_bytes)
         return
@@ -208,7 +210,14 @@ def try_resize_and_save(img_bytes: bytes, path: Path, size: tuple[int, int]) -> 
         from io import BytesIO
         im = Image.open(BytesIO(img_bytes))
         im = im.convert("RGB")
-        im.thumbnail(size, Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
+        
+        # If metadata provided, create composite image with text overlay
+        if metadata and ImageDraw and ImageFont:
+            im = create_composite_with_metadata(im, size, metadata)
+        else:
+            # Just resize the image
+            im.thumbnail(size, Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
+        
         im.save(str(path), format="JPEG", quality=85)
     except Exception:
         logging.exception("Image processing failed; writing raw bytes")
@@ -216,6 +225,109 @@ def try_resize_and_save(img_bytes: bytes, path: Path, size: tuple[int, int]) -> 
             path.write_bytes(img_bytes)
         except Exception:
             logging.exception("Failed to write image file")
+
+
+def create_composite_with_metadata(art_img: Image.Image, canvas_size: tuple[int, int], metadata: dict) -> Image.Image:
+    """Create composite image with album art on right and metadata text on left"""
+    try:
+        canvas_width, canvas_height = canvas_size
+        
+        # Scale art to fit (max 70% of canvas width)
+        art_max_width = int(canvas_width * 0.7)
+        art_max_height = canvas_height  
+        
+        # Resize art maintaining aspect ratio
+        art_img.thumbnail((art_max_width, art_max_height), Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
+        art_width, art_height = art_img.size
+        
+        # Create dark canvas
+        canvas = Image.new('RGB', canvas_size, color='#1a1a1a')
+        
+        # Place art on the right side, vertically centered
+        art_x = canvas_width - art_width
+        art_y = (canvas_height - art_height) // 2
+        canvas.paste(art_img, (art_x, art_y))
+        
+        # Draw metadata text on the left
+        draw = ImageDraw.Draw(canvas)
+        
+        # Try to load a font, fallback to default
+        try:
+            font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+            font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+        except:
+            font_large = font_medium = font_small = ImageFont.load_default()
+        
+        # Starting position for text (left side with padding)
+        text_x = 40
+        text_y = 80
+        max_text_width = art_x - 80  # Leave space before art
+        
+        # Draw Artist
+        artist = metadata.get('artist', 'Unknown Artist')
+        if artist:
+            draw.text((text_x, text_y), f"Artist:", font=font_small, fill='#888888')
+            text_y += 35
+            # Wrap artist name if too long
+            artist_lines = wrap_text(artist, draw, font_large, max_text_width)
+            for line in artist_lines:
+                draw.text((text_x, text_y), line, font=font_large, fill='#ffffff')
+                text_y += 45
+        
+        text_y += 20  # Space between sections
+        
+        # Draw Album
+        album = metadata.get('album', '')
+        if album:
+            draw.text((text_x, text_y), f"Album:", font=font_small, fill='#888888')
+            text_y += 35
+            album_lines = wrap_text(album, draw, font_medium, max_text_width)
+            for line in album_lines:
+                draw.text((text_x, text_y), line, font=font_medium, fill='#cccccc')
+                text_y += 38
+        
+        text_y += 20
+        
+        # Draw Title
+        title = metadata.get('title', '')
+        if title:
+            draw.text((text_x, text_y), f"Track:", font=font_small, fill='#888888')
+            text_y += 35
+            title_lines = wrap_text(title, draw, font_medium, max_text_width)
+            for line in title_lines:
+                draw.text((text_x, text_y), line, font=font_medium, fill='#cccccc')
+                text_y += 38
+        
+        return canvas
+    except Exception:
+        logging.exception("Failed to create composite, returning resized art only")
+        art_img.thumbnail(canvas_size, Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
+        return art_img
+
+
+def wrap_text(text: str, draw, font, max_width: int) -> list:
+    """Wrap text to fit within max_width"""
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        width = bbox[2] - bbox[0]
+        
+        if width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines if lines else [text]
 
 
 def fetch_and_save(client: MPDClient, cfg: dict, outdir: Path) -> None:
@@ -256,7 +368,12 @@ def fetch_and_save(client: MPDClient, cfg: dict, outdir: Path) -> None:
             return
         target = outdir / cfg["current_filename"]
         size = tuple(cfg.get("resize", [800, 480]))
-        try_resize_and_save(data, target, size)
+        metadata = {
+            'artist': song.get('artist', ''),
+            'album': song.get('album', ''),
+            'title': song.get('title', '')
+        }
+        try_resize_and_save(data, target, size, metadata)
         with _STATE_LOCK:
             _STATE["last_fetch"] = time.time()
             _STATE["last_error"] = ""
@@ -361,6 +478,7 @@ def display_image(path: str, cfg: dict) -> None:
         except Exception:
             logging.exception("Custom display failed, falling back")
 
+    # Use fbi to display the image (which now has metadata overlay from Python)
     fbi = shutil.which("fbi")
     if fbi:
         # Kill any existing fbi processes first
